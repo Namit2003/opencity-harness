@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenCity Harness</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  html,body{height:100%;background:#0b0f14;color:#e5e7eb}
+  #map{height:100%;min-height:200px;background:#0b0f14}
+  .card-NOMINAL{border-color:#16a34a;background:rgba(22,163,74,.10)}
+  .card-WARNING{border-color:#f59e0b;background:rgba(245,158,11,.12)}
+  .card-CRITICAL{border-color:#ef4444;background:rgba(239,68,68,.14)}
+  .pill-NOMINAL{background:#166534;color:#bbf7d0}
+  .pill-WARNING{background:#92400e;color:#fde68a}
+  .pill-CRITICAL{background:#991b1b;color:#fecaca}
+  .pill-IDLE{background:#374151;color:#d1d5db}
+  .spinner{width:18px;height:18px;border:3px solid #374151;border-top-color:#38bdf8;border-radius:50%;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  #matrix{display:grid;grid-template-columns:repeat(13,1fr);gap:3px;background:#05070a;padding:8px;border-radius:8px;border:1px solid #1f2937}
+  #matrix i{display:block;aspect-ratio:1;border-radius:50%;background:#1a2230}
+  #matrix i.on{background:#fb923c;box-shadow:0 0 6px #fb923c}
+</style>
+</head>
+<body class="flex flex-col">
+<header class="flex flex-wrap items-center gap-3 px-4 py-2 border-b border-gray-800 bg-gray-950">
+  <h1 class="font-bold text-lg tracking-tight">OpenCity <span class="text-sky-400">Harness</span></h1>
+  <form id="cityForm" class="flex gap-2">
+    <input id="cityInput" value="Raleigh" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm w-44" aria-label="City">
+    <button class="bg-sky-600 hover:bg-sky-500 rounded px-3 py-1 text-sm" type="submit">Search</button>
+  </form>
+  <div id="weather" class="flex flex-wrap items-center gap-2 text-xs"></div>
+  <div class="ml-auto flex items-center gap-2 text-xs">
+    <span id="mockTag" class="hidden px-2 py-0.5 rounded bg-purple-900 text-purple-200">MOCK MODE</span>
+    <span id="hwBadge" class="px-2 py-0.5 rounded pill-IDLE">Hardware: n/a</span>
+    <span id="latency" class="text-gray-400"></span>
+  </div>
+</header>
+
+<main class="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[300px_1fr_380px] gap-3 p-3 overflow-auto lg:overflow-hidden">
+  <section class="flex flex-col gap-3 min-h-0 overflow-auto">
+    <div class="rounded-lg border border-gray-800 bg-gray-900 p-2">
+      <div class="aspect-video bg-black rounded overflow-hidden flex items-center justify-center">
+        <video id="video" autoplay playsinline muted class="w-full h-full object-cover hidden"></video>
+        <div id="camMsg" class="text-xs text-gray-400 p-2 text-center">Starting camera...</div>
+      </div>
+      <button id="captureBtn" class="mt-2 w-full bg-emerald-600 hover:bg-emerald-500 rounded py-2 text-sm font-semibold">Capture and Inspect</button>
+    </div>
+    <div class="rounded-lg border border-gray-800 bg-gray-900 p-2">
+      <div class="text-xs text-gray-400 mb-2">Preset scenes</div>
+      <div class="grid grid-cols-2 gap-2">
+        <button data-preset="flood" class="preset bg-gray-800 hover:bg-gray-700 rounded py-2 text-sm">Flood</button>
+        <button data-preset="crash" class="preset bg-gray-800 hover:bg-gray-700 rounded py-2 text-sm">Crash</button>
+        <button data-preset="pothole" class="preset bg-gray-800 hover:bg-gray-700 rounded py-2 text-sm">Pothole</button>
+        <button data-preset="transformer_fire" class="preset bg-gray-800 hover:bg-gray-700 rounded py-2 text-sm">Transformer fire</button>
+      </div>
+      <img id="previewImg" alt="" class="hidden mt-2 rounded w-full">
+    </div>
+    <div id="status" class="flex items-center gap-2 text-sm min-h-[24px]"></div>
+  </section>
+
+  <section class="min-h-[260px] rounded-lg overflow-hidden border border-gray-800"><div id="map"></div></section>
+
+  <section class="flex flex-col gap-3 min-h-0 overflow-auto">
+    <div id="cards" class="flex flex-col gap-2"></div>
+    <div class="rounded-lg border border-gray-800 bg-gray-900 p-3">
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-xs text-gray-400">Virtual LED matrix (8x13)</span>
+        <span id="modeLabel" class="text-xs font-mono text-orange-300">IDLE</span>
+      </div>
+      <div id="matrix"></div>
+    </div>
+  </section>
+</main>
+
+<footer class="px-4 py-1.5 text-[11px] text-gray-500 border-t border-gray-800 bg-gray-950">
+  The built-in LED is a "simulated relay". All actions are advisories, not real city control.
+</footer>
+
+<script>
+(function(){
+'use strict';
+const MOCK = new URLSearchParams(location.search).get('mock') === '1';
+const ROWS = 8, COLS = 13;
+const PIPES = [
+  ['disaster','Disaster'],['grid','Grid'],['mobility','Mobility'],['infrastructure','Infrastructure']
+];
+const $ = id => document.getElementById(id);
+
+/* ---------- safe DOM helper ---------- */
+function el(tag, cls, text){
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined && text !== null) e.textContent = String(text);
+  return e;
+}
+
+/* ---------- mock data ---------- */
+const MOCK_CITY = {name:'Mockville', lat:35.7796, lon:-78.6382, temp_c:24.5, wind_kmh:18.2, precip_mm:0.0, us_aqi:42, active_alerts:['Flood Watch']};
+function mockResponse(preset){
+  const base = {
+    city: MOCK_CITY,
+    gemma_pipelines: {
+      disaster:{status:'NOMINAL',score:10,summary:'No flooding or smoke visible',action:'None'},
+      grid:{status:'NOMINAL',score:15,summary:'No visible grid damage',action:'None'},
+      mobility:{status:'NOMINAL',score:12,summary:'Traffic flowing normally',action:'None'},
+      infrastructure:{status:'NOMINAL',score:10,summary:'Road surface intact',action:'None',open311_category:'NONE'}
+    },
+    hardware:{command_byte:'0',mode_label:'ALL_CLEAR',connected:false,mock:true},
+    latency_ms:4200
+  };
+  const set=(k,status,score,summary,action)=>Object.assign(base.gemma_pipelines[k],{status,score,summary,action});
+  if(preset==='flood'){ set('disaster','CRITICAL',92,'Standing water above curb height','Close underpass'); set('mobility','WARNING',65,'Stalled vehicle in right lane','Open shoulder lane');
+    base.hardware={command_byte:'W',mode_label:'DISASTER_BEACON_ACTIVE',connected:true,mock:false}; }
+  else if(preset==='transformer_fire'){ set('grid','CRITICAL',88,'Transformer arcing and fire on pole','Shed load on feeder 12');
+    base.hardware={command_byte:'G',mode_label:'GRID_LOAD_SHED',connected:true,mock:false}; }
+  else if(preset==='crash'){ set('mobility','CRITICAL',81,'Two-vehicle collision blocking two lanes','Reroute via Main St');
+    base.hardware={command_byte:'T',mode_label:'TRAFFIC_REROUTE',connected:true,mock:false}; }
+  else if(preset==='pothole'){ set('infrastructure','WARNING',58,'Large pothole in travel lane','Dispatch repair crew'); base.gemma_pipelines.infrastructure.open311_category='POTHOLE';
+    base.hardware={command_byte:'I',mode_label:'WORK_ZONE_ACTIVE',connected:true,mock:false}; }
+  return base;
+}
+const MOCK_ORDER = ['flood','transformer_fire','crash','pothole',null];
+let mockIdx = 0;
+
+/* ---------- map ---------- */
+const map = L.map('map',{zoomControl:true}).setView([35.7796,-78.6382],11);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
+  attribution:'&copy; OpenStreetMap contributors &copy; CARTO', subdomains:'abcd', maxZoom:19}).addTo(map);
+let marker = null, hazard = null, curCity = {name:'Raleigh',lat:35.7796,lon:-78.6382};
+
+function hazardPolygon(lat, lon, radiusKm, n){
+  const pts=[]; n=n||16;
+  for(let i=0;i<n;i++){
+    const a=2*Math.PI*i/n, r=radiusKm*(1+0.15*Math.sin(3*a));
+    pts.push([lat + (r/111)*Math.cos(a), lon + (r/(111*Math.cos(lat*Math.PI/180)))*Math.sin(a)]);
+  }
+  return pts;
+}
+function setCity(c){
+  curCity = c;
+  if(marker) map.removeLayer(marker);
+  marker = L.circleMarker([c.lat,c.lon],{radius:6,color:'#38bdf8',fillColor:'#38bdf8',fillOpacity:.9}).addTo(map);
+  map.flyTo([c.lat,c.lon],11,{duration:1.2});
+  clearHazard();
+  renderWeather(c);
+}
+function clearHazard(){ if(hazard){ map.removeLayer(hazard); hazard=null; } }
+function drawHazard(status, c){
+  clearHazard();
+  if(status!=='CRITICAL' && status!=='WARNING') return;
+  const col = status==='CRITICAL' ? '#ef4444' : '#f59e0b';
+  hazard = L.polygon(hazardPolygon(c.lat,c.lon,status==='CRITICAL'?4:2.5),{color:col,fillColor:col,fillOpacity:.3,weight:2}).addTo(map);
+  hazard.bindTooltip('Hazard zone ('+status+')');
+}
+
+/* ---------- weather badges ---------- */
+function badge(text, cls){ return el('span','px-2 py-0.5 rounded '+cls, text); }
+function renderWeather(c){
+  const w = $('weather'); w.replaceChildren();
+  w.append(badge(c.name,'bg-sky-900 text-sky-200 font-semibold'));
+  w.append(badge('Temp '+c.temp_c+' C','bg-gray-800'));
+  w.append(badge('Wind '+c.wind_kmh+' km/h','bg-gray-800'));
+  w.append(badge('Precip '+c.precip_mm+' mm','bg-gray-800'));
+  const aqi = Number(c.us_aqi);
+  w.append(badge('AQI '+c.us_aqi, aqi>150?'bg-red-900 text-red-200':aqi>100?'bg-amber-900 text-amber-200':'bg-emerald-900 text-emerald-200'));
+  const al = Array.isArray(c.active_alerts)?c.active_alerts:[];
+  if(!al.length) w.append(badge('No alerts','bg-gray-800 text-gray-400'));
+  al.forEach(a=>w.append(badge('⚠ '+a,'bg-red-900 text-red-200')));
+}
+
+/* ---------- LED matrix ---------- */
+const matrixEl = $('matrix'); const cells=[];
+for(let i=0;i<ROWS*COLS;i++){ const d=document.createElement('i'); matrixEl.appendChild(d); cells.push(d); }
+const BM = {
+  beacon:[
+    '##....#....##','#.....#.....#','#.....#.....#','#.....#.....#',
+    '#.....#.....#','#...........#','#.....#.....#','##....#....##'],
+  check:[
+    '.............','..........#..','.........##..','#.......##...',
+    '.#.....##....','..#...##.....','...#.##......','....##.......']
+};
+function frameFromRows(rows){ return rows.map(r=>r.split('').map(ch=>ch==='#')); }
+function blank(){ return Array.from({length:ROWS},()=>Array(COLS).fill(false)); }
+const FRAMES = {
+  W: t => (t%2===0) ? frameFromRows(BM.beacon) : blank(),
+  G: t => { const f=blank(); const lvl=3+(t%4); // load bars pulsing
+    for(let b=0;b<7;b++){ const h=Math.min(8, 1+b+ (t%3)); for(let r=0;r<h;r++) f[ROWS-1-r][b*2]=true; } return f; },
+  T: t => { const f=blank(); const sh=t%4;
+    // top half: <<< chevrons moving left; bottom half: >>> moving right
+    for(let k=0;k<4;k++){
+      const cl=((k*4 - sh)%16+16)%16 - 2, cr=((k*4 + sh)%16+16)%16 - 2;
+      [[0,3],[1,2],[2,1],[3,0]].forEach(([r,o])=>{ const c=cl+o; if(c>=0&&c<COLS) f[r][c]=true; });
+      [[4,0],[5,1],[6,2],[7,3]].forEach(([r,o])=>{ const c=cr+o; if(c>=0&&c<COLS) f[r][c]=true; });
+    }
+    return f; },
+  I: t => { const f=blank(); for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++) f[r][c]=((r+c+t)%2===0); return f; },
+  '0': () => frameFromRows(BM.check)
+};
+let animTimer=null, tick=0;
+function showMatrix(byte){
+  clearInterval(animTimer);
+  const fn = FRAMES[byte];
+  const draw = () => { const f = fn ? fn(tick++) : blank(); f.forEach((row,r)=>row.forEach((on,c)=>cells[r*COLS+c].classList.toggle('on',on))); };
+  tick=0; draw();
+  if(fn && byte!=='0') animTimer=setInterval(draw, byte==='W'?500:350);
+}
+showMatrix(null);
+
+/* ---------- rendering results ---------- */
+function open311(infra, city){
+  return {
+    service_code: infra.open311_category,
+    description: infra.summary,
+    lat: city.lat, long: city.lon,
+    address_string: city.name,
+    media_url: null,
+    attribute: {action_recommended: infra.action},
+    status: 'DRAFT_NOT_SUBMITTED'
+  };
+}
+function renderCards(data){
+  const box = $('cards'); box.replaceChildren();
+  const p = data.gemma_pipelines || {}; const city = data.city || curCity;
+  PIPES.forEach(([key,label])=>{
+    const d = p[key] || {status:'NOMINAL',score:0,summary:'No data',action:'None'};
+    const st = ['NOMINAL','WARNING','CRITICAL'].includes(d.status)?d.status:'NOMINAL';
+    const card = el('div','rounded-lg border-2 p-3 card-'+st);
+    const head = el('div','flex items-center justify-between');
+    head.append(el('span','font-semibold',label));
+    const right = el('span','flex items-center gap-2');
+    right.append(el('span','text-sm font-mono',d.score));
+    right.append(el('span','text-[11px] px-2 py-0.5 rounded font-semibold pill-'+st, st));
+    head.append(right); card.append(head);
+    card.append(el('div','text-sm mt-1',d.summary));
+    card.append(el('div','text-xs text-gray-300 mt-1','Action: '+d.action));
+    if(key==='grid' && st!=='NOMINAL') card.append(el('div','text-xs mt-1 text-amber-200','Load-shedding advisory: reduce non-critical demand and prepare to shed load on affected feeders. ('+d.action+')'));
+    if(key==='mobility' && st!=='NOMINAL') card.append(el('div','text-xs mt-1 text-amber-200','Reroute advisory: expect delays; divert traffic around the incident. ('+d.action+')'));
+    if(key==='infrastructure' && d.open311_category && d.open311_category!=='NONE' && st!=='NOMINAL'){
+      card.append(el('div','text-[11px] text-gray-400 mt-2','Open311 ticket (ready to submit)'));
+      card.append(el('pre','text-[11px] bg-black/50 rounded p-2 mt-1 overflow-auto font-mono text-emerald-300', JSON.stringify(open311(d,city),null,2)));
+    }
+    box.append(card);
+  });
+}
+function renderHardware(h){
+  h = h || {};
+  const b = $('hwBadge');
+  const conn = !!h.connected && !h.mock;
+  b.className = 'px-2 py-0.5 rounded '+(conn?'pill-NOMINAL':'pill-WARNING');
+  b.textContent = 'Hardware: '+(conn?'connected':'mock')+(h.command_byte?' ['+h.command_byte+']':'');
+  $('modeLabel').textContent = h.mode_label || 'IDLE';
+  showMatrix(h.command_byte);
+}
+function renderResult(data){
+  if(data.city) setCity(data.city);
+  renderCards(data);
+  renderHardware(data.hardware);
+  const pd = (data.gemma_pipelines||{}).disaster;
+  if(pd) drawHazard(pd.status, data.city||curCity);
+  $('latency').textContent = (data.latency_ms!=null) ? 'Latency '+data.latency_ms+' ms' : '';
+  if(data.error) setStatus('error', String(data.error)); else setStatus('', '');
+}
+
+/* ---------- status / busy ---------- */
+function setStatus(kind,msg){
+  const s=$('status'); s.replaceChildren();
+  if(kind==='loading'){ s.append(el('div','spinner')); s.append(el('span','text-sky-300',msg)); }
+  else if(kind==='error'){ s.append(el('span','px-2 py-0.5 rounded pill-CRITICAL text-xs font-semibold','ERROR')); s.append(el('span','text-red-300 text-xs',msg)); }
+  else if(msg){ s.append(el('span','text-gray-300 text-xs',msg)); }
+}
+function setBusy(b){
+  document.querySelectorAll('button').forEach(x=>x.disabled=b);
+}
+
+/* ---------- image helpers ---------- */
+function toB64FromSource(src, w, h){
+  const MAX=1024; let sc=Math.min(1, MAX/Math.max(w,h));
+  const cv=document.createElement('canvas'); cv.width=Math.round(w*sc); cv.height=Math.round(h*sc);
+  cv.getContext('2d').drawImage(src,0,0,cv.width,cv.height);
+  return cv.toDataURL('image/jpeg',0.85).split(',')[1];
+}
+function loadImage(url){
+  return new Promise((res,rej)=>{ const i=new Image(); i.onload=()=>res(i); i.onerror=()=>rej(new Error('Could not load '+url)); i.src=url; });
+}
+function showPreview(src){ const p=$('previewImg'); p.src=src; p.classList.remove('hidden'); }
+
+/* ---------- backend calls ---------- */
+async function evaluate(b64, preset){
+  setBusy(true); setStatus('loading','Gemma is inspecting the scene (3-8 s)...');
+  try{
+    let data;
+    if(MOCK){
+      await new Promise(r=>setTimeout(r,900));
+      data = mockResponse(preset!==undefined && preset!==null ? preset : MOCK_ORDER[mockIdx++ % MOCK_ORDER.length]);
+    } else {
+      const r = await fetch('/api/evaluate',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({city:curCity.name,image_b64:b64})});
+      if(!r.ok) throw new Error('Server returned '+r.status);
+      data = await r.json();
+    }
+    renderResult(data);
+  }catch(e){ setStatus('error','Evaluation failed: '+(e&&e.message?e.message:e)); }
+  finally{ setBusy(false); }
+}
+async function runPreset(name){
+  setStatus('loading','Loading preset image...');
+  if(MOCK){ setStatus('',''); return evaluate(null,name); }
+  setBusy(true);
+  let b64;
+  try{
+    const img = await loadImage('/samples/'+name+'.jpg');
+    showPreview(img.src);
+    b64 = toB64FromSource(img,img.naturalWidth,img.naturalHeight);
+  }catch(e){
+    setBusy(false); setStatus('error','Preset image /samples/'+name+'.jpg is not available yet.'); return;
+  }
+  setBusy(false);
+  return evaluate(b64,name);
+}
+async function loadCity(name){
+  setBusy(true); setStatus('loading','Looking up '+name+'...');
+  try{
+    let c;
+    if(MOCK){ c=Object.assign({},MOCK_CITY,{name:name||'Mockville'}); }
+    else{
+      const r=await fetch('/api/city?name='+encodeURIComponent(name));
+      if(!r.ok) throw new Error('City lookup failed ('+r.status+')');
+      c=await r.json();
+      if(c.error) throw new Error(c.error);
+    }
+    setCity(c); setStatus('','');
+  }catch(e){ setStatus('error',e.message||String(e)); }
+  finally{ setBusy(false); }
+}
+
+/* ---------- webcam ---------- */
+let camOK=false;
+async function startCam(){
+  const v=$('video'), m=$('camMsg');
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){ m.textContent='Camera not supported. Use the presets.'; return; }
+  try{
+    v.srcObject = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});
+    v.classList.remove('hidden'); m.classList.add('hidden'); camOK=true;
+  }catch(e){ m.textContent='Camera unavailable or permission denied. Use the presets.'; }
+}
+$('captureBtn').addEventListener('click',()=>{
+  const v=$('video');
+  if(MOCK && !camOK){ return evaluate(null,undefined); }
+  if(!camOK||!v.videoWidth){ setStatus('error','No camera frame available. Allow camera access or use a preset.'); return; }
+  const b64=toB64FromSource(v,v.videoWidth,v.videoHeight);
+  showPreview('data:image/jpeg;base64,'+b64);
+  evaluate(b64,undefined);
+});
+
+/* ---------- wiring ---------- */
+document.querySelectorAll('.preset').forEach(b=>b.addEventListener('click',()=>runPreset(b.dataset.preset)));
+$('cityForm').addEventListener('submit',e=>{ e.preventDefault(); const n=$('cityInput').value.trim(); if(n) loadCity(n); });
+if(MOCK) $('mockTag').classList.remove('hidden');
+startCam();
+loadCity('Raleigh');
+})();
+</script>
+</body>
+</html>
