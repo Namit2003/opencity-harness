@@ -1,0 +1,5 @@
+name: OpenCity Edge
+icon: 🚦
+description: Receives one command byte over HTTP and shows it on the 8x13 LED matrix.
+ports:
+  - 8080
