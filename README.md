@@ -9,7 +9,7 @@ An open-source municipal AI harness. Type any city, show it a street image, and 
 | `mobility` | Gridlock, crashes, stalled vehicles | Reroute advisory |
 | `infrastructure` | Potholes, bridge cracks, blocked curb ramps | Draft Open311 ticket |
 
-All actions are advisories. The worst finding is sent as one command byte to an LED matrix, with a virtual matrix in the dashboard. The Arduino UNO Q board app lives in `uno_q_edge/` and is still being integrated.
+All actions are advisories. The worst finding is sent as one command byte to an LED matrix, with a virtual matrix in the dashboard. The Arduino UNO Q board app lives in `uno_q_edge/` and drives the board's LED matrix.
 
 ## How it works
 
