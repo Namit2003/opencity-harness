@@ -23,6 +23,7 @@
   #matrix{display:grid;grid-template-columns:repeat(13,1fr);gap:3px;background:#05070a;padding:8px;border-radius:8px;border:1px solid #1f2937}
   #matrix i{display:block;aspect-ratio:1;border-radius:50%;background:#1a2230}
   #matrix i.on{background:#fb923c;box-shadow:0 0 6px #fb923c}
+.dark-tiles{filter:invert(1) hue-rotate(180deg) brightness(.85) contrast(.9) saturate(.6)}
 </style>
 </head>
 <body class="flex flex-col">
@@ -128,8 +129,8 @@ let mockIdx = 0;
 
 /* ---------- map ---------- */
 const map = L.map('map',{zoomControl:true}).setView([35.7796,-78.6382],11);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
-  attribution:'&copy; OpenStreetMap contributors &copy; CARTO', subdomains:'abcd', maxZoom:19}).addTo(map);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  attribution:'&copy; OpenStreetMap contributors', maxZoom:19, className:'dark-tiles'}).addTo(map);
 let marker = null, hazard = null, curCity = {name:'Raleigh',lat:35.7796,lon:-78.6382};
 
 function hazardPolygon(lat, lon, radiusKm, n){

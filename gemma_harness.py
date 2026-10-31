@@ -169,6 +169,10 @@ def _call_gemma(client, model: str, image_bytes: bytes, prompt: str) -> str:
             types.Part.from_bytes(data=image_bytes, mime_type=_mime(image_bytes)),
             prompt,
         ],
+        # Thinking dominates latency (~30s+); the JSON task doesn't need it.
+        config=types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(thinking_level="MINIMAL")
+        ),
     )
     return resp.text or ""
 
