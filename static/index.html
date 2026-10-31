@@ -49,6 +49,7 @@
         <div id="camMsg" class="text-xs text-gray-400 p-2 text-center">Starting camera...</div>
       </div>
       <button id="captureBtn" class="mt-2 w-full bg-emerald-600 hover:bg-emerald-500 rounded py-2 text-sm font-semibold">Capture and Inspect</button>
+      <button id="liveBtn" class="keep mt-2 w-full bg-gray-800 hover:bg-gray-700 rounded py-2 text-sm">Live: off</button>
     </div>
     <div class="rounded-lg border border-gray-800 bg-gray-900 p-2">
       <div class="text-xs text-gray-400 mb-2">Preset scenes</div>
@@ -274,12 +275,12 @@ function setStatus(kind,msg){
   else if(msg){ s.append(el('span','text-gray-300 text-xs',msg)); }
 }
 function setBusy(b){
-  document.querySelectorAll('button').forEach(x=>x.disabled=b);
+  document.querySelectorAll('button:not(.keep)').forEach(x=>x.disabled=b);
 }
 
 /* ---------- image helpers ---------- */
-function toB64FromSource(src, w, h){
-  const MAX=1024; let sc=Math.min(1, MAX/Math.max(w,h));
+function toB64FromSource(src, w, h, MAX=1024){
+  let sc=Math.min(1, MAX/Math.max(w,h));
   const cv=document.createElement('canvas'); cv.width=Math.round(w*sc); cv.height=Math.round(h*sc);
   cv.getContext('2d').drawImage(src,0,0,cv.width,cv.height);
   return cv.toDataURL('image/jpeg',0.85).split(',')[1];
@@ -349,6 +350,7 @@ async function startCam(){
   }catch(e){ m.textContent='Camera unavailable or permission denied. Use the presets.'; }
 }
 $('captureBtn').addEventListener('click',()=>{
+  setLive(false);
   const v=$('video');
   if(MOCK && !camOK){ return evaluate(null,undefined); }
   if(!camOK||!v.videoWidth){ setStatus('error','No camera frame available. Allow camera access or use a preset.'); return; }
@@ -357,8 +359,43 @@ $('captureBtn').addEventListener('click',()=>{
   evaluate(b64,undefined);
 });
 
+/* ---------- live mode: sample webcam frames, skip near-identical ones ---------- */
+const LIVE_INTERVAL_MS=8000, LIVE_FORCE_MS=30000, LIVE_DIFF=5, LIVE_MAX_PX=512;
+let liveOn=false, liveTimer=null, lastThumb=null, lastSentAt=0;
+function thumbOf(src){
+  const cv=document.createElement('canvas'); cv.width=cv.height=16;
+  const ctx=cv.getContext('2d'); ctx.drawImage(src,0,0,16,16);
+  const d=ctx.getImageData(0,0,16,16).data, out=new Float32Array(256);
+  for(let i=0;i<256;i++) out[i]=0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2];
+  return out;
+}
+function thumbDiff(a,b){ let t=0; for(let i=0;i<256;i++) t+=Math.abs(a[i]-b[i]); return t/256; }
+function setLive(on){
+  liveOn=on; clearTimeout(liveTimer);
+  const b=$('liveBtn'); b.textContent=on?'Live: on (every '+LIVE_INTERVAL_MS/1000+' s)':'Live: off';
+  b.classList.toggle('bg-emerald-700',on); b.classList.toggle('bg-gray-800',!on);
+  if(on){ lastThumb=null; lastSentAt=0; liveTick(); } else setStatus('','');
+}
+async function liveTick(){
+  if(!liveOn) return;
+  const v=$('video');
+  if(MOCK && !camOK){ await evaluate(null,undefined); }
+  else if(!camOK||!v.videoWidth){ setLive(false); setStatus('error','Live mode needs the camera. Allow access first.'); return; }
+  else{
+    const th=thumbOf(v), now=Date.now();
+    if(!lastThumb || thumbDiff(th,lastThumb)>=LIVE_DIFF || now-lastSentAt>=LIVE_FORCE_MS){
+      lastThumb=th; lastSentAt=now;
+      const b64=toB64FromSource(v,v.videoWidth,v.videoHeight,LIVE_MAX_PX);
+      showPreview('data:image/jpeg;base64,'+b64);
+      await evaluate(b64,undefined);
+    } else setStatus('','Live: scene unchanged, no call sent');
+  }
+  if(liveOn) liveTimer=setTimeout(liveTick,LIVE_INTERVAL_MS);
+}
+$('liveBtn').addEventListener('click',()=>setLive(!liveOn));
+
 /* ---------- wiring ---------- */
-document.querySelectorAll('.preset').forEach(b=>b.addEventListener('click',()=>runPreset(b.dataset.preset)));
+document.querySelectorAll('.preset').forEach(b=>b.addEventListener('click',()=>{ setLive(false); runPreset(b.dataset.preset); }));
 $('cityForm').addEventListener('submit',e=>{ e.preventDefault(); const n=$('cityInput').value.trim(); if(n) loadCity(n); });
 if(MOCK) $('mockTag').classList.remove('hidden');
 startCam();
